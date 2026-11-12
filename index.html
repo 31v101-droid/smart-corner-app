@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智慧走廊防撞系統 - 即時調參控制台</title>
+<style>
+  body { font-family: sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+  .card { background: #1e293b; border-radius: 14px; padding: 18px; margin-bottom: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+  h2 { margin: 0 0 12px 0; font-size: 1.2rem; color: #38bdf8; }
+  button { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+  .btn-connect { background: #2563eb; color: white; }
+  .btn-send { background: #10b981; color: white; margin-top: 10px; }
+  .status-box { display: flex; justify-content: space-between; text-align: center; margin-top: 10px; }
+  .stat { flex: 1; background: #0f172a; padding: 12px; border-radius: 10px; margin: 0 4px; }
+  .stat-val { font-size: 1.5rem; font-weight: bold; color: #38bdf8; }
+  .light { height: 24px; border-radius: 8px; text-align: center; line-height: 24px; font-weight: bold; margin-top: 10px; }
+  .slider-row { margin-bottom: 14px; }
+  .slider-label { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 0.95rem; }
+  input[type=range] { width: 100%; accent-color: #38bdf8; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h2>📡 智慧轉角防撞系統控制台</h2>
+  <button id="btnConnect" class="btn-connect" onclick="connectBLE()">🔗 連線至 ESP32 (SmartCorner_Alert)</button>
+  <div id="lightBar" class="light" style="background:#334155;">尚未連線</div>
+  <div class="status-box">
+    <div class="stat"><div>左側距離</div><div class="stat-val" id="lDist">-- m</div></div>
+    <div class="stat"><div>右側距離</div><div class="stat-val" id="rDist">-- m</div></div>
+    <div class="stat"><div>碰撞機率</div><div class="stat-val" id="prob">-- %</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>🎛️ 演算法門檻即時微調</h2>
+  <div class="slider-row">
+    <div class="slider-label"><span>紅燈時間門檻 (TTC)</span><strong id="v_rTTC">1.0 s</strong></div>
+    <input type="range" id="rTTC" min="0.5" max="3.0" step="0.1" value="1.0" oninput="updateLabels()">
+  </div>
+  <div class="slider-row">
+    <div class="slider-label"><span>紅燈保底距離</span><strong id="v_rDist">1.5 m</strong></div>
+    <input type="range" id="rDist" min="0.5" max="2.5" step="0.1" value="1.5" oninput="updateLabels()">
+  </div>
+  <div class="slider-row">
+    <div class="slider-label"><span>黃燈警戒距離</span><strong id="v_yDist">3.0 m</strong></div>
+    <input type="range" id="yDist" min="1.5" max="5.0" step="0.1" value="3.0" oninput="updateLabels()">
+  </div>
+  <div class="slider-row">
+    <div class="slider-label"><span>最小有效速度門檻</span><strong id="v_mSpd">0.40 m/s</strong></div>
+    <input type="range" id="mSpd" min="0.10" max="1.00" step="0.05" value="0.40" oninput="updateLabels()">
+  </div>
+  <button class="btn-send" onclick="sendConfig()">💾 套用並儲存至 ESP32</button>
+</div>
+
+<script>
+const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const CONFIG_UUID  = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+const STATUS_UUID  = "1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e";
+let configChar;
+
+function updateLabels() {
+  document.getElementById('v_rTTC').innerText  = parseFloat(rTTC.value).toFixed(1) + " s";
+  document.getElementById('v_rDist').innerText = parseFloat(rDist.value).toFixed(1) + " m";
+  document.getElementById('v_yDist').innerText = parseFloat(yDist.value).toFixed(1) + " m";
+  document.getElementById('v_mSpd').innerText  = parseFloat(mSpd.value).toFixed(2) + " m/s";
+}
+
+async function connectBLE() {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'SmartCorner_Alert' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    configChar = await service.getCharacteristic(CONFIG_UUID);
+    const statusChar = await service.getCharacteristic(STATUS_UUID);
+
+    await statusChar.startNotifications();
+    statusChar.addEventListener('characteristicvaluechanged', e => {
+      const str = new TextDecoder().decode(e.target.value);
+      const [l, r, p, lvl] = str.split(',');
+      document.getElementById('lDist').innerText = l + " m";
+      document.getElementById('rDist').innerText = r + " m";
+      document.getElementById('prob').innerText  = p + " %";
+      const bar = document.getElementById('lightBar');
+      if (lvl == "3") { bar.style.background = "#ef4444"; bar.innerText = "🔴 危險警報 (RED)"; }
+      else if (lvl == "2") { bar.style.background = "#eab308"; bar.innerText = "🟡 注意警戒 (YELLOW)"; }
+      else { bar.style.background = "#22c55e"; bar.innerText = "🟢 安全通行 (GREEN)"; }
+    });
+    document.getElementById('btnConnect').innerText = "✅ 已連線至 SmartCorner_Alert";
+  } catch (err) {
+    alert("連線失敗，請確認藍牙已開啟並使用 Chrome 瀏覽器：" + err);
+  }
+}
+
+async function sendConfig() {
+  if (!configChar) return alert("請先連線 ESP32！");
+  const payload = `${rTTC.value},${rDist.value},${yDist.value},${mSpd.value}`;
+  await configChar.writeValue(new TextEncoder().encode(payload));
+  alert("✅ 參數已即時更新並寫入 ESP32 記憶體！");
+}
+</script>
+</body>
+</html>
